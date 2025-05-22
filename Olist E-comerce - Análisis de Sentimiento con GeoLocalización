@@ -1,0 +1,390 @@
+#Instalar Librerías necesarias
+# Instalación de librerías necesarias
+!pip install deep-translator
+!pip install unidecode
+!pip install plotly
+import pandas as pd
+import plotly.express as px
+import matplotlib.pyplot as plt
+import seaborn as sns
+import nltk
+from nltk.corpus import stopwords
+import re
+
+#Montar el google drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+#Cargar datasets relevantes
+
+
+# Ajusta la ruta según tu estructura de Google Drive
+ruta_base = '/content/drive/MyDrive/ceromero laptop /Maestria BI/Olist Ecomerce/'  # carpeta donde están tus CSVs
+
+# Dataset con comentarios de los clientes
+df_reviews = pd.read_csv(ruta_base + 'olist_order_reviews_dataset.csv')
+
+# Dataset con productos y categorías
+df_productos = pd.read_csv(ruta_base + 'olist_products_dataset.csv')
+
+# Items por pedido (para vincular productos con pedidos)
+df_items = pd.read_csv(ruta_base + 'olist_order_items_dataset.csv')
+
+# Pedidos (para fechas y cliente)
+df_orders = pd.read_csv(ruta_base + 'olist_orders_dataset.csv')
+
+# Clientes (para ciudad y estado)
+df_customers = pd.read_csv(ruta_base + 'olist_customers_dataset.csv')
+
+# Filtrar comentarios con menos de 4 caracteres (ignorando nulos)
+reviews_cortos = df_reviews[df_reviews['review_comment_message'].notnull() &
+                            (df_reviews['review_comment_message'].str.len() < 2)]
+
+# Mostrar resultados
+print(f"Cantidad de comentarios con menos de 4 caracteres: {len(reviews_cortos)}")
+display(reviews_cortos[['review_id', 'review_score', 'review_comment_message']])
+
+# Limpiar el dataset de reviews antes de unirlo
+
+# Convertir todo a minúsculas
+df_reviews['review_comment_message'] = df_reviews['review_comment_message'].str.lower()
+
+# Filtrar comentarios con al menos 10 caracteres
+df_reviews = df_reviews[df_reviews['review_comment_message'].str.len() > 1]
+
+
+# Eliminar duplicados
+df_reviews = df_reviews.drop_duplicates()
+
+# Eliminar filas con comentarios vacíos
+df_reviews = df_reviews.dropna(subset=['review_comment_message'])
+
+# Eliminar espacios innecesarios en columnas de texto
+df_reviews['review_comment_message'] = df_reviews['review_comment_message'].str.strip()
+
+# Resetear índice
+df_reviews = df_reviews.reset_index(drop=True)
+
+import nltk
+from nltk.corpus import stopwords
+nltk.download('stopwords')
+stopwords_es = set(stopwords.words('spanish'))
+
+# Eliminar stopwords básicas
+df_reviews['clean_comment'] = df_reviews['review_comment_message'].apply(
+    lambda x: ' '.join([word for word in x.split() if word not in stopwords_es])
+)
+
+# Mostrar cantidad de registros del data frame
+
+print("Cantidad de registros en el DataFrame:", len(df_reviews))
+
+# Unir todos los datasets
+# 1. Comentarios + productos
+df_reviews_items = df_reviews.merge(df_items[['order_id', 'product_id']], on='order_id', how='left')
+
+# 2. Agregar categoría del producto
+df_reviews_items = df_reviews_items.merge(df_productos[['product_id', 'product_category_name']], on='product_id', how='left')
+
+# 3. Agregar datos del pedido
+df_reviews_items = df_reviews_items.merge(df_orders[['order_id', 'customer_id', 'order_purchase_timestamp', 'order_delivered_customer_date']], on='order_id', how='left')
+
+# 4. Agregar datos del cliente (ciudad y estado)
+df_reviews_items = df_reviews_items.merge(df_customers[['customer_id', 'customer_city', 'customer_state']], on='customer_id', how='left')
+
+# Traducir Categorías al español
+from deep_translator import GoogleTranslator
+
+# Obtener categorías únicas (sin nulos)
+categorias = df_reviews_items['product_category_name'].dropna().unique()
+
+# Traducir cada categoría limpiando guiones bajos
+diccionario_traduccion = {}
+for cat in categorias:
+    cat_limpio = cat.replace("_", " ")
+    try:
+        traduccion = GoogleTranslator(source='auto', target='es').translate(cat_limpio)
+        diccionario_traduccion[cat] = traduccion
+    except Exception as e:
+        print(f"Error al traducir '{cat}': {e}")
+        diccionario_traduccion[cat] = cat  # fallback
+
+# Aplicar traducciones
+df_reviews_items['categoria_es'] = df_reviews_items['product_category_name'].map(diccionario_traduccion)
+
+
+# Filtrar y traducir comentarios al español
+df_reviews_items = df_reviews_items[df_reviews_items['review_comment_message'].notnull()]
+df_reviews_items = df_reviews_items[df_reviews_items['review_comment_message'].str.strip() != '']
+
+# Para evitar límite de traducciones, tomamos una muestra
+df_reviews_items = df_reviews_items.head(500).copy()
+
+# Función de traducción
+def traducir_texto(texto):
+    try:
+        return GoogleTranslator(source='auto', target='es').translate(texto)
+    except Exception as e:
+        print("Error:", e)
+        return ""
+
+# Aplicar traducción a los comentarios
+df_reviews_items['comentario_traducido'] = df_reviews_items['review_comment_message'].apply(traducir_texto)
+
+
+# Bloque Limpieza de comentarios en df_reviews (actualizado con stopwords)
+
+# Descargar stopwords si es la primera vez
+nltk.download('stopwords')
+
+# Lista de stopwords en español
+stopwords_es = set(stopwords.words('spanish'))
+
+# Función para limpiar texto eliminando stopwords
+def limpiar_comentario(texto):
+    if pd.isnull(texto):
+        return ""
+    texto = texto.lower()  # Minúsculas
+    texto = re.sub(r'[^a-záéíóúüñ ]', '', texto)  # Eliminar caracteres no alfabéticos
+    palabras = texto.split()
+    palabras_limpias = [palabra for palabra in palabras if palabra not in stopwords_es]
+    return " ".join(palabras_limpias)
+
+# Aplicar limpieza a los comentarios traducidos
+df_reviews_items['comentario_traducido'] = df_reviews_items['comentario_traducido'].apply(limpiar_comentario)
+
+
+# Exportar dataset final para análisis posterior
+# Guardar en Drive
+df_reviews_items.to_csv(ruta_base + 'reviews_traducidos_geolocalizados.csv', index=False)
+
+# Vista previa
+df_reviews_items[['comentario_traducido', 'review_score', 'categoria_es', 'order_purchase_timestamp', 'customer_city', 'customer_state']].head()
+
+
+# Contar la cantidad de comentarios por cada score (de 1 a 5 estrellas)
+resumen_scores = df_reviews_items['review_score'].value_counts().sort_index()
+
+# Mostrar en forma de tabla
+print("Cantidad de comentarios por puntuación:")
+print(resumen_scores)
+
+# Distribución de comentarios según puntuación
+
+fig = px.bar(
+    x=resumen_scores.index,
+    y=resumen_scores.values,
+    labels={'x': 'Puntuación (review_score)', 'y': 'Cantidad de comentarios'},
+    title='Distribución de comentarios según puntuación',
+    text=resumen_scores.values
+)
+fig.update_traces(textposition='outside')
+fig.update_layout(xaxis=dict(tickmode='linear'))
+fig.show()
+
+
+# Crear clasificación de sentimiento
+# Clasificar los comentarios según el score
+def clasificar_sentimiento(score):
+    if score <= 2:
+        return 'Negativo'
+    elif score == 3:
+        return 'Neutral'
+    else:
+        return 'Positivo'
+
+# Aplicar clasificación
+df_reviews_items['sentimiento'] = df_reviews_items['review_score'].apply(clasificar_sentimiento)
+
+
+
+# Contar la cantidad de comentarios por cada score (de 1 a 5 estrellas)
+resumen_sentimiento = df_reviews_items['sentimiento'].value_counts().sort_index()
+
+# Mostrar en forma de tabla
+print("Cantidad de comentarios por sentimiento:")
+print(resumen_sentimiento)
+
+
+# Distribución de comentarios según Sentimiento
+
+fig = px.bar(
+    x=resumen_sentimiento.index,
+    y=resumen_sentimiento.values,
+    labels={'x': 'Sentimientos (review_sentimiento)', 'y': 'Cantidad de comentarios'},
+    title='Distribución de comentarios según sentimiento',
+    text=resumen_sentimiento.values
+)
+fig.update_traces(textposition='outside')
+fig.update_layout(xaxis=dict(tickmode='linear'))
+fig.show()
+
+
+# Nube de palabras segmentada por sentimiento
+
+from wordcloud import WordCloud
+
+# Crear función para generar nubes por tipo
+def generar_nube(sentimiento):
+    comentarios = df_reviews_items[df_reviews_items['sentimiento'] == sentimiento]['comentario_traducido']
+    comentarios = comentarios.dropna()
+    comentarios = comentarios[comentarios.str.len() > 4]
+    texto = " ".join(comentarios)
+
+    wordcloud = WordCloud(
+        width=800,
+        height=400,
+        background_color='white',
+        colormap='viridis',
+        max_words=100,
+    ).generate(texto)
+
+    plt.figure(figsize=(12, 6))
+    plt.imshow(wordcloud, interpolation='bilinear')
+    plt.axis('off')
+    plt.title(f'Nube de Palabras - Comentarios {sentimiento}', fontsize=16)
+    plt.show()
+
+# Generar para cada tipo
+for tipo in ['Negativo', 'Neutral', 'Positivo']:
+    generar_nube(tipo)
+
+
+# Calcular la media por estado
+
+# Agrupar por estado y calcular el promedio de review_score
+review_por_estado = df_reviews_items.groupby('customer_state')['review_score'].mean().reset_index()
+review_por_estado.columns = ['Estado', 'Puntaje_Promedio']
+
+# Cargar GeoJSON de estados de Brasil
+import json
+import requests
+
+# GeoJSON de los estados de Brasil (desde GitHub u otra fuente confiable)
+geojson_url = 'https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson'
+geojson_brasil = requests.get(geojson_url).json()
+
+import json
+import requests
+
+# Descargar GeoJSON de los estados de Brasil
+url = 'https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/brazil-states.geojson'
+geojson_estados = requests.get(url).json()
+
+
+estado_abreviaturas = {
+    'AC': 'Acre', 'AL': 'Alagoas', 'AP': 'Amapá', 'AM': 'Amazonas', 'BA': 'Bahia', 'CE': 'Ceará',
+    'DF': 'Distrito Federal', 'ES': 'Espírito Santo', 'GO': 'Goiás', 'MA': 'Maranhão', 'MT': 'Mato Grosso',
+    'MS': 'Mato Grosso do Sul', 'MG': 'Minas Gerais', 'PA': 'Pará', 'PB': 'Paraíba', 'PR': 'Paraná',
+    'PE': 'Pernambuco', 'PI': 'Piauí', 'RJ': 'Rio de Janeiro', 'RN': 'Rio Grande do Norte',
+    'RS': 'Rio Grande do Sul', 'RO': 'Rondônia', 'RR': 'Roraima', 'SC': 'Santa Catarina',
+    'SP': 'São Paulo', 'SE': 'Sergipe', 'TO': 'Tocantins'
+}
+
+# Aplicar el mapeo
+review_por_estado['Estado'] = review_por_estado['Estado'].map(estado_abreviaturas)
+
+
+# Crear mapa con geojson
+
+import plotly.express as px
+
+fig = px.choropleth(
+    review_por_estado,
+    geojson=geojson_estados,
+    locations='Estado',
+    featureidkey='properties.name',
+    color='Cantidad_Reviews',
+    color_continuous_scale='Blues',
+    title='Cantidad de Reviews por Estado - Brasil',
+    scope='south america',  # se puede quitar si usas geojson personalizado
+    labels={'Cantidad_Reviews': 'Número de Reviews'},
+    hover_name='Estado',
+    hover_data={'Cantidad_Reviews': True}
+)
+
+fig.update_geos(fitbounds="locations", visible=False)
+fig.update_layout(margin={"r":0,"t":50,"l":0,"b":0})
+fig.show()
+
+
+estado_abreviaturas = {
+    'AC': 'Acre', 'AL': 'Alagoas', 'AP': 'Amapá', 'AM': 'Amazonas', 'BA': 'Bahia', 'CE': 'Ceará',
+    'DF': 'Distrito Federal', 'ES': 'Espírito Santo', 'GO': 'Goiás', 'MA': 'Maranhão', 'MT': 'Mato Grosso',
+    'MS': 'Mato Grosso do Sul', 'MG': 'Minas Gerais', 'PA': 'Pará', 'PB': 'Paraíba', 'PR': 'Paraná',
+    'PE': 'Pernambuco', 'PI': 'Piauí', 'RJ': 'Rio de Janeiro', 'RN': 'Rio Grande do Norte',
+    'RS': 'Rio Grande do Sul', 'RO': 'Rondônia', 'RR': 'Roraima', 'SC': 'Santa Catarina',
+    'SP': 'São Paulo', 'SE': 'Sergipe', 'TO': 'Tocantins'
+}
+
+# Aplicar el mapeo
+review_por_estado['Estado'] = review_por_estado['Estado'].map(estado_abreviaturas)
+
+fig = px.choropleth(
+    review_por_estado,
+    geojson=geojson_estados,
+    locations='Estado',
+    featureidkey='properties.name',
+    color='Cantidad_Reviews',
+    color_continuous_scale='Blues',
+    title='Cantidad de Reviews por Estado - Brasil',
+    labels={'Cantidad_Reviews': 'Número de Reviews'},
+    hover_name='Estado',
+    hover_data={'Cantidad_Reviews': True}
+)
+
+fig.update_geos(fitbounds="locations", visible=False)
+fig.update_layout(margin={"r":0,"t":50,"l":0,"b":0})
+fig.show()
+
+
+import plotly.express as px
+
+# Agrupamos por estado y sentimiento
+sentimiento_estado = df_reviews_items.groupby(['customer_state', 'sentimiento']).size().reset_index(name='Cantidad')
+
+# Creamos el gráfico
+fig = px.bar(
+    sentimiento_estado,
+    x='customer_state',
+    y='Cantidad',
+    color='sentimiento',
+    barmode='group',  # puede ser 'stack' si quieres barras apiladas
+    title='Cantidad de Comentarios por Estado y Sentimiento',
+    labels={'customer_state': 'Estado', 'Cantidad': 'Cantidad de Comentarios', 'sentimiento': 'Sentimiento'}
+)
+
+# Mostramos el gráfico
+fig.show()
+
+
+# 1. Total de comentarios por estado
+total_por_estado = df_reviews_items.groupby('customer_state').size().reset_index(name='total_comentarios')
+
+# 2. Comentarios positivos por estado
+positivos_por_estado = df_reviews_items[df_reviews_items['sentimiento'] == 'Positivo'] \
+    .groupby('customer_state').size().reset_index(name='positivos')
+
+# 3. Unir y calcular porcentaje
+porcentaje_positivos = total_por_estado.merge(positivos_por_estado, on='customer_state', how='left')
+porcentaje_positivos['positivos'] = porcentaje_positivos['positivos'].fillna(0)
+porcentaje_positivos['porcentaje_positivo'] = porcentaje_positivos['positivos'] / porcentaje_positivos['total_comentarios']
+porcentaje_positivos['porcentaje_positivo'] = (
+    porcentaje_positivos['porcentaje_positivo'] * 100
+).round(1).astype(str) + '%'
+
+import plotly.express as px
+
+fig = px.bar(
+    porcentaje_positivos.sort_values(by='porcentaje_positivo', ascending=False),
+    x='customer_state',
+    y='porcentaje_positivo',
+    color='porcentaje_positivo',
+    color_continuous_scale='Blues',
+    title='Porcentaje de Comentarios Positivos por Estado'
+)
+
+fig.update_layout(xaxis_title='Estado', yaxis_title='% Comentarios Positivos')
+fig.show()
+
+
